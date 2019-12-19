@@ -1,7 +1,7 @@
 /* cache.h - cache module interfaces */
 
 /* SimpleScalar(TM) Tool Suite
- * Copyright (C) 1994-2001 by Todd M. Austin, Ph.D. and SimpleScalar, LLC.
+ * Copyright (C) 1994-2003 by Todd M. Austin, Ph.D. and SimpleScalar, LLC.
  * All Rights Reserved. 
  * 
  * THIS IS A LEGAL DOCUMENT, BY USING SIMPLESCALAR,
@@ -45,9 +45,9 @@
  * currently maintained by SimpleScalar LLC (info@simplescalar.com). US Mail:
  * 2395 Timbercrest Court, Ann Arbor, MI 48105.
  * 
- * Copyright (C) 2000-2001 by The Regents of The University of Michigan.
- * Copyright (C) 1994-2001 by Todd M. Austin, Ph.D. and SimpleScalar, LLC.
+ * Copyright (C) 1994-2003 by Todd M. Austin, Ph.D. and SimpleScalar, LLC.
  */
+
 
 #ifndef CACHE_H
 #define CACHE_H
@@ -98,10 +98,6 @@
    speed block access, this macro decides if a cache is "highly associative" */
 #define CACHE_HIGHLY_ASSOC(cp)	((cp)->assoc > 4)
 
-/* global cache access macros */
-#define CACHE_TAGSET(cp, addr)	((addr) & (cp)->tagset_mask)
-#define IS_CACHE_FAST_HIT(cp, addr) (CACHE_TAGSET(cp, addr) == cp->last_tagset)
-
 /* cache replacement policy */
 enum cache_policy {
   LRU,		/* replace least recently used block (perfect LRU) */
@@ -148,6 +144,16 @@ struct cache_set_t
 				   access to cache blocks */
 };
 
+/* MSHR */
+#define MSHR_FULL -1
+
+struct cache_mshr
+{
+  md_addr_t block_addr;   /* Address of the data block */
+  unsigned int target_no; /* Number of targets for secondary misses */
+  tick_t ready; /* Memory ready time for MSHR */
+};
+
 /* cache definition */
 struct cache_t
 {
@@ -160,6 +166,12 @@ struct cache_t
   int assoc;			/* cache associativity */
   enum cache_policy policy;	/* cache replacement policy */
   unsigned int hit_latency;	/* cache hit latency */
+
+  /* MSHR */
+  tick_t ready;   /* Indicates time when cache is ready for new instructions after MSHR is full */
+  int mshrs;     /* Number of MSHRs */
+  int mshr_targets;    /* Number of targets for each MSHR */
+  struct cache_mshr *mshr;
 
   /* miss/replacement handler, read/write BSIZE bytes starting at BADDR
      from/into cache block BLK, returns the latency of the operation
@@ -203,6 +215,14 @@ struct cache_t
   counter_t writebacks;		/* total number of writebacks at misses */
   counter_t invalidations;	/* total number of external invalidations */
 
+  /* MSHR */
+
+  counter_t mshr_accesses;
+  counter_t hits_under_misses;
+  counter_t mshr_misses;
+  counter_t mshr_hit_rate;
+  counter_t mshr_full;
+
   /* last block to hit, used to optimize cache hit processing */
   md_addr_t last_tagset;	/* tag of last line accessed */
   struct cache_blk_t *last_blk;	/* cache block last accessed */
@@ -215,6 +235,23 @@ struct cache_t
   struct cache_set_t sets[1];	/* each entry is a set */
 };
 
+/* create and initialize a cache structure with MSHR */
+struct cache_t *                      /* pointer to cache created */
+mshr_cache_create(char *name,         /* name of the cache */
+                  int nsets,          /* total number of sets in cache */
+                  int bsize,          /* block (line) size of cache */
+                  int balloc,         /* allocate data space for blocks? */
+                  int usize,          /* size of user data to alloc w/blks */
+                  int assoc,                 /* associativity of cache */
+                  enum cache_policy policy,  /* replacement policy w/in sets */
+                  /* block access function, see description w/in struct cache def */
+                  unsigned int (*blk_access_fn)(enum mem_cmd cmd,
+                                                md_addr_t baddr, int bsize,
+                                                struct cache_blk_t *blk,
+                                                tick_t now),
+                  unsigned int hit_latency,   /* latency in cycles for a hit */
+                  int mshrs,                  /* number of mshrs */
+                  int mshr_targets);          /* number of mshr targets */
 /* create and initialize a general cache structure */
 struct cache_t *			/* pointer to cache created */
 cache_create(char *name,		/* name of the cache */
@@ -263,6 +300,7 @@ cache_access(struct cache_t *cp,	/* cache to access */
 	     enum mem_cmd cmd,		/* access type, Read or Write */
 	     md_addr_t addr,		/* address of access */
 	     void *vp,			/* ptr to buffer for input/output */
+       tick_t *mem_ready,   /* ptr to mem_ready of ruu_station */
 	     int nbytes,		/* number of bytes to access */
 	     tick_t now,		/* time of access */
 	     byte_t **udata,		/* for return of user data ptr */

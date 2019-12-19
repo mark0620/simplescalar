@@ -1,7 +1,7 @@
 /* sim-cache.c - sample cache simulator implementation */
 
 /* SimpleScalar(TM) Tool Suite
- * Copyright (C) 1994-2001 by Todd M. Austin, Ph.D. and SimpleScalar, LLC.
+ * Copyright (C) 1994-2003 by Todd M. Austin, Ph.D. and SimpleScalar, LLC.
  * All Rights Reserved. 
  * 
  * THIS IS A LEGAL DOCUMENT, BY USING SIMPLESCALAR,
@@ -45,9 +45,9 @@
  * currently maintained by SimpleScalar LLC (info@simplescalar.com). US Mail:
  * 2395 Timbercrest Court, Ann Arbor, MI 48105.
  * 
- * Copyright (C) 2000-2001 by The Regents of The University of Michigan.
- * Copyright (C) 1994-2001 by Todd M. Austin, Ph.D. and SimpleScalar, LLC.
+ * Copyright (C) 1994-2003 by Todd M. Austin, Ph.D. and SimpleScalar, LLC.
  */
+
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -131,7 +131,7 @@ dl1_access_fn(enum mem_cmd cmd,		/* access cmd, Read or Write */
   if (cache_dl2)
     {
       /* access next level of data cache hierarchy */
-      return cache_access(cache_dl2, cmd, baddr, NULL, bsize,
+      return cache_access(cache_dl2, cmd, baddr, NULL, NULL, bsize,
 			  /* now */now, /* pudata */NULL, /* repl addr */NULL);
     }
   else
@@ -165,7 +165,7 @@ il1_access_fn(enum mem_cmd cmd,		/* access cmd, Read or Write */
   if (cache_il2)
     {
       /* access next level of inst cache hierarchy */
-      return cache_access(cache_il2, cmd, baddr, NULL, bsize,
+      return cache_access(cache_il2, cmd, baddr, NULL, NULL, bsize,
 			  /* now */now, /* pudata */NULL, /* repl addr */NULL);
     }
   else
@@ -649,11 +649,11 @@ sim_uninit(void)
 /* precise architected memory state accessor macros */
 #define __READ_CACHE(addr, SRC_T)					\
   ((dtlb								\
-    ? cache_access(dtlb, Read, (addr), NULL,				\
+    ? cache_access(dtlb, Read, (addr), NULL, NULL,				\
 		   sizeof(SRC_T), 0, NULL, NULL)			\
     : 0),								\
    (cache_dl1								\
-    ? cache_access(cache_dl1, Read, (addr), NULL,			\
+    ? cache_access(cache_dl1, Read, (addr), NULL, NULL,			\
 		   sizeof(SRC_T), 0, NULL, NULL)			\
     : 0))
 
@@ -674,11 +674,11 @@ sim_uninit(void)
 
 #define __WRITE_CACHE(addr, DST_T)					\
   ((dtlb								\
-    ? cache_access(dtlb, Write, (addr), NULL,				\
+    ? cache_access(dtlb, Write, (addr), NULL, NULL,				\
 		   sizeof(DST_T), 0, NULL, NULL)			\
     : 0),								\
    (cache_dl1								\
-    ? cache_access(cache_dl1, Write, (addr), NULL,			\
+    ? cache_access(cache_dl1, Write, (addr), NULL, NULL,			\
 		   sizeof(DST_T), 0, NULL, NULL)			\
     : 0))
 
@@ -706,9 +706,9 @@ dcache_access_fn(struct mem_t *mem,	/* memory space to access */
 		 int nbytes)		/* number of bytes to access */
 {
   if (dtlb)
-    cache_access(dtlb, cmd, addr, NULL, nbytes, 0, NULL, NULL);
+    cache_access(dtlb, cmd, addr, NULL, NULL, nbytes, 0, NULL, NULL);
   if (cache_dl1)
-    cache_access(cache_dl1, cmd, addr, NULL, nbytes, 0, NULL, NULL);
+    cache_access(cache_dl1, cmd, addr, NULL, NULL, nbytes, 0, NULL, NULL);
   return mem_access(mem, cmd, addr, p, nbytes);
 }
 
@@ -742,7 +742,7 @@ sim_main(void)
     dlite_main(regs.regs_PC - sizeof(md_inst_t), regs.regs_PC,
 	       sim_num_insn, &regs, mem);
 
-  while (!program_complete)
+  while (TRUE)
     {
       /* maintain $r0 semantics */
       regs.regs_R[MD_REG_ZERO] = 0;
@@ -753,10 +753,10 @@ sim_main(void)
       /* get the next instruction to execute */
       if (itlb)
 	cache_access(itlb, Read, IACOMPRESS(regs.regs_PC),
-		     NULL, ISCOMPRESS(sizeof(md_inst_t)), 0, NULL, NULL);
+		     NULL, NULL, ISCOMPRESS(sizeof(md_inst_t)), 0, NULL, NULL);
       if (cache_il1)
 	cache_access(cache_il1, Read, IACOMPRESS(regs.regs_PC),
-		     NULL, ISCOMPRESS(sizeof(md_inst_t)), 0, NULL, NULL);
+		     NULL, NULL, ISCOMPRESS(sizeof(md_inst_t)), 0, NULL, NULL);
       MD_FETCH_INST(inst, mem, regs.regs_PC);
 
       /* keep an instruction count */

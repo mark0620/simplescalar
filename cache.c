@@ -1,7 +1,7 @@
 /* cache.c - cache module routines */
 
 /* SimpleScalar(TM) Tool Suite
- * Copyright (C) 1994-2001 by Todd M. Austin, Ph.D. and SimpleScalar, LLC.
+ * Copyright (C) 1994-2003 by Todd M. Austin, Ph.D. and SimpleScalar, LLC.
  * All Rights Reserved. 
  * 
  * THIS IS A LEGAL DOCUMENT, BY USING SIMPLESCALAR,
@@ -45,9 +45,9 @@
  * currently maintained by SimpleScalar LLC (info@simplescalar.com). US Mail:
  * 2395 Timbercrest Court, Ann Arbor, MI 48105.
  * 
- * Copyright (C) 2000-2001 by The Regents of The University of Michigan.
- * Copyright (C) 1994-2001 by Todd M. Austin, Ph.D. and SimpleScalar, LLC.
+ * Copyright (C) 1994-2003 by Todd M. Austin, Ph.D. and SimpleScalar, LLC.
  */
+
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -62,6 +62,7 @@
 #define CACHE_TAG(cp, addr)	((addr) >> (cp)->tag_shift)
 #define CACHE_SET(cp, addr)	(((addr) >> (cp)->set_shift) & (cp)->set_mask)
 #define CACHE_BLK(cp, addr)	((addr) & (cp)->blk_mask)
+#define CACHE_TAGSET(cp, addr)	((addr) & (cp)->tagset_mask)
 
 /* extract/reconstruct a block address */
 #define CACHE_BADDR(cp, addr)	((addr) & ~(cp)->blk_mask)
@@ -255,21 +256,23 @@ update_way_list(struct cache_set_t *set,	/* set contained way chain */
     panic("bogus WHERE designator");
 }
 
-/* create and initialize a general cache structure */
-struct cache_t *			/* pointer to cache created */
-cache_create(char *name,		/* name of the cache */
-	     int nsets,			/* total number of sets in cache */
-	     int bsize,			/* block (line) size of cache */
-	     int balloc,		/* allocate data space for blocks? */
-	     int usize,			/* size of user data to alloc w/blks */
-	     int assoc,			/* associativity of cache */
-	     enum cache_policy policy,	/* replacement policy w/in sets */
-	     /* block access function, see description w/in struct cache def */
-	     unsigned int (*blk_access_fn)(enum mem_cmd cmd,
-					   md_addr_t baddr, int bsize,
-					   struct cache_blk_t *blk,
-					   tick_t now),
-	     unsigned int hit_latency)	/* latency in cycles for a hit */
+/* create and initialize a cache structure with MSHR */
+struct cache_t *                      /* pointer to cache created */
+mshr_cache_create(char *name,         /* name of the cache */
+                  int nsets,          /* total number of sets in cache */
+                  int bsize,          /* block (line) size of cache */
+                  int balloc,         /* allocate data space for blocks? */
+                  int usize,          /* size of user data to alloc w/blks */
+                  int assoc,                 /* associativity of cache */
+                  enum cache_policy policy,  /* replacement policy w/in sets */
+                  /* block access function, see description w/in struct cache def */
+                  unsigned int (*blk_access_fn)(enum mem_cmd cmd,
+                                                md_addr_t baddr, int bsize,
+                                                struct cache_blk_t *blk,
+                                                tick_t now),
+                  unsigned int hit_latency,    /* latency in cycles for a hit */
+                  int mshrs,                 /* # mshrs */
+                  int mshr_targets)
 {
   struct cache_t *cp;
   struct cache_blk_t *blk;
@@ -323,6 +326,29 @@ cache_create(char *name,		/* name of the cache */
   cp->tagset_mask = ~cp->blk_mask;
   cp->bus_free = 0;
 
+  /* MSHR */
+  cp->ready = 0;      /* indicates that the cache is ready initially */
+  if (mshrs > 0) {
+		 printf("capp in the mshrs \n");
+     cp->mshrs = mshrs;
+     cp->mshr = (struct cache_mshr *)(malloc(sizeof(struct cache_mshr) * cp->mshrs));
+  }
+  else {
+     cp->mshrs = -1;  /* Not using any mshr */
+     cp->mshr=NULL;
+  }
+
+  if (mshr_targets > 0) cp->mshr_targets = mshr_targets;
+  else cp->mshr_targets = 1;
+
+  /* initialize the mshr structure */
+  for (i=0; i<cp->mshrs; i++)
+  {
+     cp->mshr[i].block_addr=0;
+     cp->mshr[i].target_no=0;
+     cp->mshr[i].ready=0;
+  }
+
   /* print derived parameters during debug */
   debug("%s: cp->hsize     = %d", cp->name, cp->hsize);
   debug("%s: cp->blk_mask  = 0x%08x", cp->name, cp->blk_mask);
@@ -337,6 +363,14 @@ cache_create(char *name,		/* name of the cache */
   cp->replacements = 0;
   cp->writebacks = 0;
   cp->invalidations = 0;
+
+  /* initialize mshr stats */
+  cp->mshr_misses = 0;
+  cp->mshr_full = 0;
+  cp->mshr_accesses = 0;
+  cp->mshr_hit_rate = 0;
+  cp->hits_under_misses = 0;
+
 
   /* blow away the last block accessed */
   cp->last_tagset = 0;
@@ -398,6 +432,26 @@ cache_create(char *name,		/* name of the cache */
 	}
     }
   return cp;
+}
+
+/* create and initialize a general cache structure */
+struct cache_t *      /* pointer to cache created */
+cache_create(char *name,    /* name of the cache */
+       int nsets,     /* total number of sets in cache */
+       int bsize,     /* block (line) size of cache */
+       int balloc,    /* allocate data space for blocks? */
+       int usize,     /* size of user data to alloc w/blks */
+       int assoc,     /* associativity of cache */
+       enum cache_policy policy,  /* replacement policy w/in sets */
+       /* block access function, see description w/in struct cache def */
+       unsigned int (*blk_access_fn)(enum mem_cmd cmd,
+             md_addr_t baddr, int bsize,
+             struct cache_blk_t *blk,
+             tick_t now),
+       unsigned int hit_latency)  /* latency in cycles for a hit */
+{
+  return mshr_cache_create(name, nsets, bsize, balloc, usize, assoc,
+    policy, blk_access_fn, hit_latency, 0, 0);
 }
 
 /* parse policy */
@@ -470,6 +524,27 @@ cache_reg_stats(struct cache_t *cp,	/* cache instance */
   sprintf(buf, "%s.inv_rate", name);
   sprintf(buf1, "%s.invalidations / %s.accesses", name, name);
   stat_reg_formula(sdb, buf, "invalidation rate (i.e., invs/ref)", buf1, NULL);
+  
+  /* MSHR stats */
+  if (cp->mshrs != -1) {
+
+     sprintf(buf, "%s.mshr_accesses", name);
+     sprintf(buf1, "%s.hits_under_misses + %s.mshr_misses + %s.mshr_full", name, name, name);
+     stat_reg_formula(sdb, buf, "total number of mshr accesses", buf1, "%12.0f");
+
+     sprintf(buf, "%s.hits_under_misses", name);
+     stat_reg_counter(sdb, buf, "total number of mshr hits under misses", &cp->hits_under_misses, 0, NULL);
+
+     sprintf(buf, "%s.mshr_misses", name);
+     stat_reg_counter(sdb, buf, "total number of mshr misses", &cp->mshr_misses, 0, NULL);
+
+     sprintf(buf, "%s.mshr_hit_rate", name);
+     sprintf(buf1, "%s.hits_under_misses / %s.mshr_accesses", name, name);
+     stat_reg_formula(sdb, buf, "mshr hit rate (i.e., hits/accesses)", buf1, NULL);
+
+     sprintf(buf, "%s.mshr_full", name);
+     stat_reg_counter(sdb, buf, "total number of mshr full events", &cp->mshr_full, 0, NULL);
+  }
 }
 
 /* print cache stats */
@@ -500,11 +575,13 @@ cache_access(struct cache_t *cp,	/* cache to access */
 	     enum mem_cmd cmd,		/* access type, Read or Write */
 	     md_addr_t addr,		/* address of access */
 	     void *vp,			/* ptr to buffer for input/output */
+       tick_t *mem_ready,   /* ptr to ruu_station's memory ready status */
 	     int nbytes,		/* number of bytes to access */
 	     tick_t now,		/* time of access */
 	     byte_t **udata,		/* for return of user data ptr */
 	     md_addr_t *repl_addr)	/* for address of replaced block */
 {
+
   byte_t *p = vp;
   md_addr_t tag = CACHE_TAG(cp, addr);
   md_addr_t set = CACHE_SET(cp, addr);
@@ -512,24 +589,28 @@ cache_access(struct cache_t *cp,	/* cache to access */
   struct cache_blk_t *blk, *repl;
   int lat = 0;
 
+  /* MSHR */
+  md_addr_t baddr =  CACHE_TAGSET(cp, addr);
+  int i, mshr_index = -1;
+
   /* default replacement address */
   if (repl_addr)
     *repl_addr = 0;
 
   /* check alignments */
-//  if ((nbytes & (nbytes-1)) != 0 || (addr & (nbytes-1)) != 0)
-//    fatal("cache: access error: bad size or alignment, addr 0x%08x", addr);
+  if ((nbytes & (nbytes-1)) != 0 || (addr & (nbytes-1)) != 0)
+    fatal("cache: access error: bad size or alignment, addr 0x%08x", addr);
 
   /* access must fit in cache block */
   /* FIXME:
      ((addr + (nbytes - 1)) > ((addr & ~cp->blk_mask) + (cp->bsize - 1))) */
-//  if ((addr + nbytes) > ((addr & ~cp->blk_mask) + cp->bsize))
-//    fatal("cache: access error: access spans block, addr 0x%08x", addr);
+  if ((addr + nbytes) > ((addr & ~cp->blk_mask) + cp->bsize))
+    fatal("cache: access error: access spans block, addr 0x%08x", addr);
 
   /* permissions are checked on cache misses */
 
   /* check for a fast hit: access to same block */
-  if (IS_CACHE_FAST_HIT(cp, addr) && (cp->last_blk != NULL))
+  if (CACHE_TAGSET(cp, addr) == cp->last_tagset)
     {
       /* hit in the same block */
       blk = cp->last_blk;
@@ -564,6 +645,24 @@ cache_access(struct cache_t *cp,	/* cache to access */
   /* cache block not found */
 
   /* **MISS** */
+
+  /* Look for an empty MSHR to allocate */
+  if ((now) && (cp->mshrs != -1)) {
+     for (i = 0; i < cp->mshrs; i++) {
+        if (cp->mshr[i].ready <= now) { /* empty MSHR found */
+           mshr_index = i;
+           cp->mshr_misses++;
+           break;
+        }
+     }
+
+     if (mshr_index == -1) { /* no free mshr found, return signal to stall */
+       cp->mshr_full++;
+       *mem_ready = cp->ready;
+       return MSHR_FULL;
+     }
+  }
+
   cp->misses++;
 
   /* select the appropriate block to replace, and re-link this entry to
@@ -648,6 +747,19 @@ cache_access(struct cache_t *cp,	/* cache to access */
   if (cp->hsize)
     link_htab_ent(cp, &cp->sets[set], repl);
 
+  /* update MSHR status */
+  if ((now) && (cp->mshrs != -1)) {
+
+     cp->mshr[mshr_index].ready = repl->ready;
+     cp->mshr[mshr_index].block_addr = baddr;
+     cp->mshr[mshr_index].target_no = 1;
+
+     for (i = 0, cp->ready = cp->mshr[0].ready; i < cp->mshrs; i++) {
+        if (cp->mshr[i].ready < cp->ready)
+           cp->ready = cp->mshr[i].ready;
+     }
+  }
+
   /* return latency of the operation */
   return lat;
 
@@ -655,6 +767,33 @@ cache_access(struct cache_t *cp,	/* cache to access */
  cache_hit: /* slow hit handler */
   
   /* **HIT** */
+
+  if ((now) && (cp->mshrs != -1)) {
+
+     /* check for secondary miss */
+     if (blk->ready > now) {
+        /* search for mshr that matches the address */
+        for (i = 0; i < cp->mshrs; i++) {
+           if (cp->mshr[i].block_addr == baddr && cp->mshr[i].ready > now) {
+
+              /* check if a target is free in the matched mshr */
+              if (cp->mshr[i].target_no < cp->mshr_targets) {
+                 mshr_index = i;
+                 cp->mshr[i].target_no++;
+                 cp->hits_under_misses++;
+                 break;
+              }
+              else {
+                 /* target space full, return stall signal */
+                 *mem_ready = cp->mshr[i].ready;
+                 cp->mshr_full++;
+                 return MSHR_FULL;
+              }
+           }
+       }
+    }
+  }
+
   cp->hits++;
 
   /* copy data out of cache block, if block exists */
@@ -690,6 +829,34 @@ cache_access(struct cache_t *cp,	/* cache to access */
  cache_fast_hit: /* fast hit handler */
   
   /* **FAST HIT** */
+
+  if ((now) && (cp->mshrs != -1)) {
+
+     /* check for secondary miss */
+     if (blk->ready > now) {
+        /* search for mshr that matches the address */
+        for (i = 0; i < cp->mshrs; i++) {
+           if (cp->mshr[i].block_addr == baddr && cp->mshr[i].ready > now) {
+
+              /* check if a target is free in the matched mshr */
+              if (cp->mshr[i].target_no < cp->mshr_targets) {
+                 mshr_index = i;
+                 cp->mshr[i].target_no++;
+                 cp->hits_under_misses++;
+                 break;
+              }
+              else {
+                 /* target space full, return stall signal */
+                 *mem_ready = cp->mshr[i].ready;
+                 cp->mshr_full++;
+                 return MSHR_FULL;
+              }
+           }
+       }
+    }
+  }
+
+
   cp->hits++;
 
   /* copy data out of cache block, if block exists */
