@@ -1,7 +1,7 @@
 /* sim-outorder.c - sample out-of-order issue perf simulator implementation */
 
 /* SimpleScalar(TM) Tool Suite
- * Copyright (C) 1994-2001 by Todd M. Austin, Ph.D. and SimpleScalar, LLC.
+ * Copyright (C) 1994-2003 by Todd M. Austin, Ph.D. and SimpleScalar, LLC.
  * All Rights Reserved. 
  * 
  * THIS IS A LEGAL DOCUMENT, BY USING SIMPLESCALAR,
@@ -45,9 +45,9 @@
  * currently maintained by SimpleScalar LLC (info@simplescalar.com). US Mail:
  * 2395 Timbercrest Court, Ann Arbor, MI 48105.
  * 
- * Copyright (C) 2000-2001 by The Regents of The University of Michigan.
- * Copyright (C) 1994-2001 by Todd M. Austin, Ph.D. and SimpleScalar, LLC.
+ * Copyright (C) 1994-2003 by Todd M. Austin, Ph.D. and SimpleScalar, LLC.
  */
+
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -110,9 +110,6 @@ static int ruu_branch_penalty;
 /* speed of front-end of machine relative to execution core */
 static int fetch_speed;
 
-/* optimistic misfetch recovery */
-static int mf_compat;
-
 /* branch predictor type {nottaken|taken|perfect|bimod|2lev} */
 static char *pred_type;
 
@@ -160,14 +157,15 @@ static int RUU_size = 8;
 /* load/store queue (LSQ) size */
 static int LSQ_size = 4;
 
-/* perfect memory disambiguation */   
-int perfect_disambig = FALSE;
-
 /* l1 data cache config, i.e., {<config>|none} */
 static char *cache_dl1_opt;
 
 /* l1 data cache hit latency (in cycles) */
 static int cache_dl1_lat;
+
+/* MSHR options */
+static char* mshr_enabled;
+static int mshr_size;
 
 /* l2 data cache config, i.e., {<config>|none} */
 static char *cache_dl2_opt;
@@ -270,8 +268,8 @@ struct res_desc fu_config[] = {
     1,
     0,
     {
-      { IntMULT, 7, 1 },
-      { IntDIV, 12, 9 }
+      { IntMULT, 3, 1 },
+      { IntDIV, 20, 19 }
     }
   },
   {
@@ -288,9 +286,9 @@ struct res_desc fu_config[] = {
     4,
     0,
     {
-      { FloatADD, 4, 1 },
-      { FloatCMP, 4, 1 },
-      { FloatCVT, 3, 1 }
+      { FloatADD, 2, 1 },
+      { FloatCMP, 2, 1 },
+      { FloatCVT, 2, 1 }
     }
   },
   {
@@ -299,8 +297,8 @@ struct res_desc fu_config[] = {
     0,
     {
       { FloatMULT, 4, 1 },
-      { FloatDIV, 12, 9 },
-      { FloatSQRT, 18, 15 }
+      { FloatDIV, 12, 12 },
+      { FloatSQRT, 24, 24 }
     }
   },
 };
@@ -343,11 +341,6 @@ static counter_t RUU_count;		/* cumulative RUU occupancy */
 static counter_t RUU_fcount;		/* cumulative RUU full count */
 static counter_t LSQ_count;		/* cumulative LSQ occupancy */
 static counter_t LSQ_fcount;		/* cumulative LSQ full count */
-
-/* number of misfetches */
-static counter_t misfetch_count = 0;
-static counter_t misfetch_only_count = 0;
-static counter_t recovery_count = 0;
 
 /* total non-speculative bogus addresses seen (debug var) */
 static counter_t sim_invalid_addrs;
@@ -448,7 +441,7 @@ dl1_access_fn(enum mem_cmd cmd,		/* access cmd, Read or Write */
   if (cache_dl2)
     {
       /* access next level of data cache hierarchy */
-      lat = cache_access(cache_dl2, cmd, baddr, NULL, bsize,
+      lat = cache_access(cache_dl2, cmd, baddr, NULL, NULL, bsize,
 			 /* now */now, /* pudata */NULL, /* repl addr */NULL);
       if (cmd == Read)
 	return lat;
@@ -502,7 +495,7 @@ il1_access_fn(enum mem_cmd cmd,		/* access cmd, Read or Write */
 if (cache_il2)
     {
       /* access next level of inst cache hierarchy */
-      lat = cache_access(cache_il2, cmd, baddr, NULL, bsize,
+      lat = cache_access(cache_il2, cmd, baddr, NULL, NULL, bsize,
 			 /* now */now, /* pudata */NULL, /* repl addr */NULL);
       if (cmd == Read)
 	return lat;
@@ -642,10 +635,6 @@ sim_reg_options(struct opt_odb_t *odb)
 	      &fetch_speed, /* default */1,
 	      /* print */TRUE, /* format */NULL);
 
-  opt_reg_flag(odb, "-fetch:mf_compat", "optimistic misfetch recovery",
-	      &mf_compat, /* default */FALSE,
-	      /* print */TRUE, /* format */NULL);
-
   /* branch predictor options */
 
   opt_reg_note(odb,
@@ -748,10 +737,6 @@ sim_reg_options(struct opt_odb_t *odb)
 	      &LSQ_size, /* default */8,
 	      /* print */TRUE, /* format */NULL);
 
-  opt_reg_flag(odb, "-lsq:perfect",
-               "perfect memory disambiguation",
-               &perfect_disambig, /* default */FALSE, /* print */TRUE, NULL);
-
   /* cache options */
 
   opt_reg_string(odb, "-cache:dl1",
@@ -778,6 +763,17 @@ sim_reg_options(struct opt_odb_t *odb)
 	      "l1 data cache hit latency (in cycles)",
 	      &cache_dl1_lat, /* default */1,
 	      /* print */TRUE, /* format */NULL);
+
+  /* MSHR options */
+  opt_reg_string(odb, "-mshr",
+        "MSHR enabled(true/false)",
+        &mshr_enabled, /* default */"false",
+        /* print */TRUE, /* format */NULL);
+
+  opt_reg_int(odb, "-mshr:size",
+        "Number of MSHR registers",
+        &mshr_size, /* default */0,
+        /* print */TRUE, /* format */NULL);
 
   opt_reg_string(odb, "-cache:dl2",
 		 "l2 data cache config, i.e., {<config>|none}",
@@ -907,6 +903,9 @@ sim_check_options(struct opt_odb_t *odb,        /* options database */
   if (ruu_ifq_size < 1 || (ruu_ifq_size & (ruu_ifq_size - 1)) != 0)
     fatal("inst fetch queue size must be positive > 0 and a power of two");
 
+  if (ruu_branch_penalty < 1)
+    fatal("mis-prediction penalty must be at least 1 cycle");
+
   if (fetch_speed < 1)
     fatal("front-end speed must be positive and non-zero");
 
@@ -1030,9 +1029,16 @@ sim_check_options(struct opt_odb_t *odb,        /* options database */
       if (sscanf(cache_dl1_opt, "%[^:]:%d:%d:%d:%c",
 		 name, &nsets, &bsize, &assoc, &c) != 5)
 	fatal("bad l1 D-cache parms: <name>:<nsets>:<bsize>:<assoc>:<repl>");
-      cache_dl1 = cache_create(name, nsets, bsize, /* balloc */FALSE,
+      if(strcmp(mshr_enabled, "true")==0){
+      printf("MSHR Enabled!\n");
+      cache_dl1 = mshr_cache_create(name, nsets, bsize, /* balloc */FALSE,
 			       /* usize */0, assoc, cache_char2policy(c),
-			       dl1_access_fn, /* hit lat */cache_dl1_lat);
+			       dl1_access_fn, /* hit lat */cache_dl1_lat, mshr_size, 4);
+      }
+      else 
+        cache_dl1 = cache_create(name, nsets, bsize, /* balloc */FALSE,
+             /* usize */0, assoc, cache_char2policy(c),
+             dl1_access_fn, /* hit lat */cache_dl1_lat);
 
       /* is the level 2 D-cache defined? */
       if (!mystricmp(cache_dl2_opt, "none"))
@@ -1310,12 +1316,6 @@ sim_reg_stats(struct stat_sdb_t *sdb)   /* stats database */
                    "sim_slip / sim_num_insn", NULL);
 
   /* register predictor stats */
-  stat_reg_counter(sdb, "misfetch_count", "misfetch count",
-                   &misfetch_count, /* initial value */0, /* format */NULL);
-  stat_reg_counter(sdb, "misfetch_only_count", "misfetch only count",
-                   &misfetch_only_count, /* initial value */0, /* format */NULL);
-  stat_reg_counter(sdb, "recovery_count", "recovery count",
-                   &recovery_count, /* initial value */0, /* format */NULL);
   if (pred)
     bpred_reg_stats(pred, sdb);
 
@@ -1367,7 +1367,7 @@ sim_reg_stats(struct stat_sdb_t *sdb)   /* stats database */
       pcstat_sdists[i] = stat_reg_sdist(sdb, buf, buf1,
 					/* initial value */0,
 					/* print format */(PF_COUNT|PF_PDF),
-					/* format */"0x%lx %u %.2f",
+					/* format */"0x%lx %lu %.2f",
 					/* print fn */NULL);
     }
   ld_reg_stats(sdb);
@@ -1531,6 +1531,10 @@ struct RUU_station {
   int queued;				/* operands ready and queued */
   int issued;				/* operation is/was executing */
   int completed;			/* operation has completed execution */
+
+  /* MSHR */
+  tick_t mem_ready;   /* time when cache is ready for access */
+
   /* output operand dependency list, these lists are used to
      limit the number of associative searches into the RUU when
      instructions complete and need to wake up dependent insts */
@@ -1993,18 +1997,19 @@ readyq_dump(FILE *stream)			/* output stream */
     }
 }
 
-/* Insert ready node into the ready list using ready instruction scheduling
-   policy. Currently the following scheduling policy is enforced:
+/* insert ready node into the ready list using ready instruction scheduling
+   policy; currently the following scheduling policy is enforced:
 
-   1. Memory, long latency operations, and branches are automatically placed
-      the head of the queue.
+     memory and long latency operands, and branch instructions first
 
-   2. All other instructions are inserted into the queue in program order.
+   then
 
-  This policy works well because branches pass through the machine quicker
+     all other instructions, oldest instructions first
+
+  this policy works well because branches pass through the machine quicker
   which works to reduce branch misprediction latencies, and very long latency
   instructions (such loads and multiplies) get priority since they are very
-  likely on the program's critical path. */
+  likely on the program's critical path */
 static void
 readyq_enqueue(struct RUU_station *rs)		/* RS to enqueue */
 {
@@ -2193,7 +2198,7 @@ ruu_commit(void)
 	      /* stores must retire their store value to the cache at commit,
 		 try to get a store port (functional unit allocation) */
 	      fu = res_get(fu_pool, MD_OP_FUCLASS(LSQ[LSQ_head].op));
-	      if (fu)
+	      if (fu && LSQ[LSQ_head].mem_ready <= sim_cycle)
 		{
 		  /* reserve the functional unit */
 		  if (fu->master->busy)
@@ -2208,9 +2213,16 @@ ruu_commit(void)
 		      /* commit store value to D-cache */
 		      lat =
 			cache_access(cache_dl1, Write, (LSQ[LSQ_head].addr&~3),
-				     NULL, 4, sim_cycle, NULL, NULL);
-		      if (lat > cache_dl1_lat)
-			events |= PEV_CACHEMISS;
+				     NULL, &LSQ[LSQ_head].mem_ready, 4, sim_cycle, NULL, NULL);
+		        if(lat < 0) {
+              // mshr full or no targets available, stall 
+              break;
+            }
+            else{
+              if(lat > cache_dl1_lat){
+                events |= PEV_CACHEMISS;
+              }
+            }
 		    }
 
 		  /* all loads and stores must to access D-TLB */
@@ -2219,7 +2231,7 @@ ruu_commit(void)
 		      /* access the D-TLB */
 		      lat =
 			cache_access(dtlb, Read, (LSQ[LSQ_head].addr & ~3),
-				     NULL, 4, sim_cycle, NULL, NULL);
+				     NULL, NULL, 4, sim_cycle, NULL, NULL);
 		      if (lat > 1)
 			events |= PEV_TLBMISS;
 		    }
@@ -2424,10 +2436,9 @@ ruu_writeback(void)
 	  ruu_recover(rs - RUU);
 	  tracer_recover();
 	  bpred_recover(pred, rs->PC, rs->stack_recover_idx);
-          recovery_count++;
 
 	  /* stall fetch until I-fetch and I-decode recover */
-	  ruu_fetch_issue_delay += ruu_branch_penalty;
+	  ruu_fetch_issue_delay = ruu_branch_penalty;
 
 	  /* continue writeback of the branch/control instruction */
 	}
@@ -2436,7 +2447,6 @@ ruu_writeback(void)
       if (pred
 	  && bpred_spec_update == spec_WB
 	  && !rs->in_LSQ
-	  && !rs->spec_mode
 	  && (MD_OP_FLAGS(rs->op) & F_CTRL))
 	{
 	  bpred_update(pred,
@@ -2567,20 +2577,18 @@ lsq_refresh(void)
       if (/* store? */
 	  (MD_OP_FLAGS(LSQ[index].op) & (F_MEM|F_STORE)) == (F_MEM|F_STORE))
 	{
-	  if (!STORE_ADDR_READY(&LSQ[index]) && !perfect_disambig)
+	  if (!STORE_ADDR_READY(&LSQ[index]))
 	    {
 	      /* FIXME: a later STD + STD known could hide the STA unknown */
-	      /* STA unknown, blocks all later loads, stop search */
+	      /* sta unknown, blocks all later loads, stop search */
 	      break;
 	    }
-	  else if (!OPERANDS_READY(&LSQ[index]) ||
-	    (!STORE_ADDR_READY(&LSQ[index]) && perfect_disambig))
+	  else if (!OPERANDS_READY(&LSQ[index]))
 	    {
-	      /* STA known, but STD unknown: may block a later store, record
+	      /* sta known, but std unknown, may block a later store, record
 		 this address for later referral, we use an array here because
 		 for most simulations the number of entries to search will be
-		 very small.  If perfect disambiguation is on and the address is
-		 not ready, treat this in the same manner as a STD unknown. */
+		 very small */
 	      if (n_std_unknowns == MAX_STD_UNKNOWNS)
 		fatal("STD unknown array overflow, increase MAX_STD_UNKNOWNS");
 	      std_unknowns[n_std_unknowns++] = LSQ[index].addr;
@@ -2656,6 +2664,7 @@ ruu_issue(void)
        node && n_issued < ruu_issue_width;
        node = next_node)
     {
+      int is_cache_blocked = 0;
       next_node = node->next;
 
       /* still valid? */
@@ -2698,7 +2707,8 @@ ruu_issue(void)
 	      if (MD_OP_FUCLASS(rs->op) != NA)
 		{
 		  fu = res_get(fu_pool, MD_OP_FUCLASS(rs->op));
-		  if (fu)
+      /* Load/Store-> MSHR or target should be available. Others-> mem_ready=0 */
+		  if (fu && rs->mem_ready <= sim_cycle)
 		    {
 		      /* got one! issue inst to functional unit */
 		      rs->issued = TRUE;
@@ -2713,7 +2723,7 @@ ruu_issue(void)
 		      if (rs->in_LSQ
 			  && ((MD_OP_FLAGS(rs->op) & (F_MEM|F_LOAD))
 			      == (F_MEM|F_LOAD)))
-			{
+			{ /* Load instruction */
 			  int events = 0;
 
 			  /* for loads, determine cache access latency:
@@ -2757,10 +2767,21 @@ ruu_issue(void)
 				  /* access the cache if non-faulting */
 				  load_lat =
 				    cache_access(cache_dl1, Read,
-						 (rs->addr & ~3), NULL, 4,
+						 (rs->addr & ~3), NULL, &rs->mem_ready, 4,
 						 sim_cycle, NULL, NULL);
-				  if (load_lat > cache_dl1_lat)
-				    events |= PEV_CACHEMISS;
+
+            /* mshr or target is not available */
+            if (load_lat < 0) {
+                is_cache_blocked = 1;
+                rs->issued = FALSE;
+                readyq_enqueue(rs);
+            }
+            else {
+                is_cache_blocked = 0;
+                if (load_lat > cache_dl1_lat) {
+                    events |= PEV_CACHEMISS;
+                }
+            }
 				}
 			      else
 				{
@@ -2770,13 +2791,13 @@ ruu_issue(void)
 			    }
 
 			  /* all loads and stores must to access D-TLB */
-			  if (dtlb && MD_VALID_ADDR(rs->addr))
+			  if (!is_cache_blocked && dtlb && MD_VALID_ADDR(rs->addr))
 			    {
 			      /* access the D-DLB, NOTE: this code will
 				 initiate speculative TLB misses */
 			      tlb_lat =
 				cache_access(dtlb, Read, (rs->addr & ~3),
-					     NULL, 4, sim_cycle, NULL, NULL);
+					     NULL, NULL, 4, sim_cycle, NULL, NULL);
 			      if (tlb_lat > 1)
 				events |= PEV_TLBMISS;
 
@@ -2784,6 +2805,7 @@ ruu_issue(void)
 			      load_lat = MAX(tlb_lat, load_lat);
 			    }
 
+          if(!is_cache_blocked){
 			  /* use computed cache access latency */
 			  eventq_queue_event(rs, sim_cycle + load_lat);
 
@@ -2791,6 +2813,7 @@ ruu_issue(void)
 			  ptrace_newstage(rs->ptrace_seq, PST_EXECUTE,
 					  ((rs->ea_comp ? PEV_AGEN : 0)
 					   | events));
+      	}
 			}
 		      else /* !load && !store */
 			{
@@ -2830,7 +2853,6 @@ ruu_issue(void)
 		  n_issued++;
 		}
 	    } /* !store */
-
 	}
       /* else, RUU entry was squashed */
 
@@ -3280,6 +3302,15 @@ simoo_mem_obj(struct mem_t *mem,		/* memory space to access */
   else
     cmd = Write;
 
+#if 0
+  char *errstr;
+
+  errstr = mem_valid(cmd, addr, nbytes, /* declare */FALSE);
+  if (errstr)
+    return errstr;
+#endif
+
+  /* else, no error, access memory */
   if (spec_mode)
     spec_mem_access(mem, cmd, addr, p, nbytes);
   else
@@ -3883,42 +3914,31 @@ ruu_dispatch(void)
       br_taken = (regs.regs_NPC != (regs.regs_PC + sizeof(md_inst_t)));
       br_pred_taken = (pred_PC != (regs.regs_PC + sizeof(md_inst_t)));
 
-      /* Check for perfection prediction inconsistencies. */
-      if (pred_PC != regs.regs_NPC && pred_perfect)
-        {
-      	  pred_PC = regs.regs_NPC;
-	  fetch_pred_PC = fetch_regs_PC = regs.regs_NPC;
-	  fetch_head = (ruu_ifq_size-1);
-	  fetch_num = 1;
-	  fetch_tail = 0;
-	  fetch_redirected = TRUE;
-        }
-      /* Check for misfetch - we've predicted the branch taken, but our
-       * predicted target doesn't match the computed target.  Just update
-       * the PC values and do a fetch squash. */
-      else if ((MD_OP_FLAGS(op) & (F_CTRL|F_DIRJMP)) == (F_CTRL|F_DIRJMP) 
-	      && target_PC != pred_PC && br_pred_taken)
+      if ((pred_PC != regs.regs_NPC && pred_perfect)
+	  || ((MD_OP_FLAGS(op) & (F_CTRL|F_DIRJMP)) == (F_CTRL|F_DIRJMP)
+	      && target_PC != pred_PC && br_pred_taken))
 	{
-          misfetch_count++;
-          recovery_count++;
+	  /* Either 1) we're simulating perfect prediction and are in a
+             mis-predict state and need to patch up, or 2) We're not simulating
+             perfect prediction, we've predicted the branch taken, but our
+             predicted target doesn't match the computed target (i.e.,
+             mis-fetch).  Just update the PC values and do a fetch squash.
+             This is just like calling fetch_squash() except we pre-anticipate
+             the updates to the fetch values at the end of this function.  If
+             case #2, also charge a mispredict penalty for redirecting fetch */
+	  fetch_pred_PC = fetch_regs_PC = regs.regs_NPC;
+	  /* was: if (pred_perfect) */
+	  if (pred_perfect)
+	    pred_PC = regs.regs_NPC;
 
 	  fetch_head = (ruu_ifq_size-1);
 	  fetch_num = 1;
 	  fetch_tail = 0;
-	  ruu_fetch_issue_delay += ruu_branch_penalty;
 
-          if (mf_compat) {
-	    fetch_pred_PC = fetch_regs_PC = regs.regs_NPC;
-	    fetch_redirected = TRUE;
-	    misfetch_only_count++;
-          }
-          else {
-	    fetch_pred_PC = fetch_regs_PC = target_PC;
-	    if (br_taken) {
-	      fetch_redirected = TRUE;
-	      misfetch_only_count++;
-	    }
-          }
+	  if (!pred_perfect)
+	    ruu_fetch_issue_delay = ruu_branch_penalty;
+
+	  fetch_redirected = TRUE;
 	}
 
       /* is this a NOP */
@@ -3953,6 +3973,10 @@ ruu_dispatch(void)
 	  rs->stack_recover_idx = stack_recover_idx;
 	  rs->spec_mode = spec_mode;
 	  rs->addr = 0;
+
+    /* mshr: mem_ready set to 0 */
+    rs->mem_ready = 0;
+
 	  /* rs->tag is already set */
 	  rs->seq = ++inst_seq;
 	  rs->queued = rs->issued = rs->completed = FALSE;
@@ -3980,10 +4004,14 @@ ruu_dispatch(void)
 	      lsq->stack_recover_idx = 0;
 	      lsq->spec_mode = spec_mode;
 	      lsq->addr = addr;
+
+        /* mshr: mem_ready set to 0 */
+        lsq->mem_ready = 0;
+
 	      /* lsq->tag is already set */
 	      lsq->seq = ++inst_seq;
 	      lsq->queued = lsq->issued = lsq->completed = FALSE;
-	      lsq->ptrace_seq = pseq + 1;
+	      lsq->ptrace_seq = ptrace_seq++;
 
 	      /* pipetrace this uop */
 	      ptrace_newuop(lsq->ptrace_seq, "internal ld/st", lsq->PC, 0);
@@ -4231,7 +4259,6 @@ ruu_fetch(void)
   md_inst_t inst;
   int stack_recover_idx;
   int branch_cnt;
-  enum md_opcode op;
 
   for (i=0, branch_cnt=0;
        /* fetch up to as many instruction as the DISPATCH stage can decode */
@@ -4246,7 +4273,7 @@ ruu_fetch(void)
       fetch_regs_PC = fetch_pred_PC;
 
       /* is this a bogus text address? (can happen on mis-spec path) */
-      if (1 || ld_text_base <= fetch_regs_PC
+      if (ld_text_base <= fetch_regs_PC
 	  && fetch_regs_PC < (ld_text_base+ld_text_size)
 	  && !(fetch_regs_PC & (sizeof(md_inst_t)-1)))
 	{
@@ -4260,7 +4287,7 @@ ruu_fetch(void)
 	      /* access the I-cache */
 	      lat =
 		cache_access(cache_il1, Read, IACOMPRESS(fetch_regs_PC),
-			     NULL, ISCOMPRESS(sizeof(md_inst_t)), sim_cycle,
+			     NULL, NULL, ISCOMPRESS(sizeof(md_inst_t)), sim_cycle,
 			     NULL, NULL);
 	      if (lat > cache_il1_lat)
 		last_inst_missed = TRUE;
@@ -4272,7 +4299,7 @@ ruu_fetch(void)
 		 speculative TLB misses */
 	      tlb_lat =
 		cache_access(itlb, Read, IACOMPRESS(fetch_regs_PC),
-			     NULL, ISCOMPRESS(sizeof(md_inst_t)), sim_cycle,
+			     NULL, NULL, ISCOMPRESS(sizeof(md_inst_t)), sim_cycle,
 			     NULL, NULL);
 	      if (tlb_lat > 1)
 		last_inst_tmissed = TRUE;
@@ -4298,12 +4325,14 @@ ruu_fetch(void)
 
       /* have a valid inst, here */
 
-      /* pre-decode instruction */
-      MD_SET_OPCODE(op, inst);
-
       /* possibly use the BTB target */
       if (pred)
 	{
+	  enum md_opcode op;
+
+	  /* pre-decode instruction, used for bpred stats recording */
+	  MD_SET_OPCODE(op, inst);
+	  
 	  /* get the next predicted fetch address; only use branch predictor
 	     result for branches (assumes pre-decode bits); NOTE: returned
 	     value may be 1 if bpred can only predict a direction */
@@ -4359,9 +4388,6 @@ ruu_fetch(void)
       last_inst_missed = FALSE;
       last_inst_tmissed = FALSE;
 
-      /* allocate an additional ptrace_seq for internal ld/st uop */
-      if (MD_OP_FLAGS(op) & F_MEM) ptrace_seq++;
-      
       /* adjust instruction fetch queue */
       fetch_tail = (fetch_tail + 1) & (ruu_ifq_size - 1);
       fetch_num++;
@@ -4508,7 +4534,6 @@ sim_main(void)
 	  MD_SET_OPCODE(op, inst);
 
 	  /* execute the instruction */
-	  fprintf(stderr, "inst: %d\n", op);
 	  switch (op)
 	    {
 #define DEFINST(OP,MSK,NAME,OPFORM,RES,FLAGS,O1,O2,I1,I2,I3)		\
@@ -4632,6 +4657,5 @@ sim_main(void)
       /* finish early? */
       if (max_insts && sim_num_insn >= max_insts)
 	return;
-      if (program_complete) return;
     }
 }
