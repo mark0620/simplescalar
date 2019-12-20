@@ -156,7 +156,6 @@ struct cache_mshr
   md_addr_t block_addr;   /* Address of the data block */
   unsigned int target_no; /* Number of targets for secondary misses */
   tick_t ready; /* Memory ready time for MSHR */
-	struct cache_blk_t *mshr_blk;
 };
 /* cache definition */
 struct cache_t

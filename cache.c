@@ -625,6 +625,7 @@ cache_access(struct cache_t *cp,	/* cache to access */
 	   blk;
 	   blk=blk->hash_next)
 	{
+	  //if (blk->tag == tag && (blk->status & CACHE_BLK_VALID)&& blk->ready <= now)
 	  if (blk->tag == tag && (blk->status & CACHE_BLK_VALID))
 	    goto cache_hit;
 	}
@@ -637,6 +638,7 @@ cache_access(struct cache_t *cp,	/* cache to access */
 	   blk=blk->way_next)
 	{
 	  if (blk->tag == tag && (blk->status & CACHE_BLK_VALID))
+	  //if (blk->tag == tag && (blk->status & CACHE_BLK_VALID)&& blk->ready <= now)
 	    goto cache_hit;
 	}
     }
@@ -647,8 +649,11 @@ cache_access(struct cache_t *cp,	/* cache to access */
 
   /* Look for an empty MSHR to allocate */
   if ((now) && (cp->mshrs != -1)) {
+		 //printf("block : %x \n",baddr);
      for (i = 0; i < cp->mshrs; i++) {
 				// check whether there is a block in mshr which is same to missed block
+				//printf("mshr's block : %x \n",cp->mshr[i].block_addr);
+				
 				if (cp->mshr[i].block_addr == baddr && cp->mshr[i].ready > now)
 				{
 					if(cp->mshr[i].target_no < cp->mshr_targets)
@@ -786,7 +791,7 @@ cache_access(struct cache_t *cp,	/* cache to access */
   return lat;
  mshr_hit:
  	cp->mshr[mshr_index].target_no++;
-	return *mem_ready-now; 
+	return (*mem_ready)-now; 
 
 
  cache_hit: /* slow hit handler */

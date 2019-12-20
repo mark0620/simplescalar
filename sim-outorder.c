@@ -1033,7 +1033,7 @@ sim_check_options(struct opt_odb_t *odb,        /* options database */
       printf("MSHR Enabled!\n");
       cache_dl1 = mshr_cache_create(name, nsets, bsize, /* balloc */FALSE,
 			       /* usize */0, assoc, cache_char2policy(c),
-			       dl1_access_fn, /* hit lat */cache_dl1_lat, mshr_size, 4);
+			       dl1_access_fn, /* hit lat */cache_dl1_lat, mshr_size, 8);
       }
       else 
         cache_dl1 = cache_create(name, nsets, bsize, /* balloc */FALSE,

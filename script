@@ -1,0 +1,7 @@
+
+./sim-outorder -redir:sim ./mshr_log/mshr/dl2lat20.mshrsize64.txt -cache:dl1 dl1:512:64:1:l -cache:dl2lat 20 -cache:dl1lat 1 -mshr true -mshr:size 64 -max:inst 1000000000 ../spec_alpha/bzip2/bzip2_base.alpha ../spec_alpha/bzip2/bzip2_input/input.source 280
+./sim-outorder -redir:sim ./mshr_log/no_mshr/dl2lat20.mshrsize64.txt -cache:dl1 dl1:512:64:1:l -cache:dl2lat 20 -cache:dl1lat 1 -mshr false -mshr:size 64 -max:inst 1000000000 ../spec_alpha/bzip2/bzip2_base.alpha ../spec_alpha/bzip2/bzip2_input/input.source 280
+
+./sim-outorder -redir:sim ./mshr_log/mshr/dl2lat40.mshrsize64.txt -cache:dl1 dl1:512:64:1:l -cache:dl2lat 40 -cache:dl1lat 1 -mshr true -mshr:size 64 -max:inst 1000000000 ../spec_alpha/bzip2/bzip2_base.alpha ../spec_alpha/bzip2/bzip2_input/input.source 280
+./sim-outorder -redir:sim ./mshr_log/no_mshr/dl2lat40.mshrsize64.txt -cache:dl1 dl1:512:64:1:l -cache:dl2lat 40 -cache:dl1lat 1 -mshr false -mshr:size 64 -max:inst 1000000000 ../spec_alpha/bzip2/bzip2_base.alpha ../spec_alpha/bzip2/bzip2_input/input.source 280
+
