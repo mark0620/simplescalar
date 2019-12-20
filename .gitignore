@@ -1,5 +1,5 @@
 *.o
 tags
-.swp
+*.swp
 mase*
 *.txt

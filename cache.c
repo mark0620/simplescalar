@@ -667,7 +667,7 @@ cache_access(struct cache_t *cp,	/* cache to access */
 					// target space full, return stall signal
 					else
 					{
-						cp->mshr_full++;
+						cp->mshr_full= cp->mshr_full + 1;
 						return MSHR_FULL;
 					}
 				}
@@ -790,7 +790,6 @@ cache_access(struct cache_t *cp,	/* cache to access */
   /* return latency of the operation */
   return lat;
  mshr_hit:
- 	cp->mshr[mshr_index].target_no++;
 	return (*mem_ready)-now; 
 
 
