@@ -625,8 +625,8 @@ cache_access(struct cache_t *cp,	/* cache to access */
 	   blk;
 	   blk=blk->hash_next)
 	{
-	  //if (blk->tag == tag && (blk->status & CACHE_BLK_VALID)&& blk->ready <= now)
-	  if (blk->tag == tag && (blk->status & CACHE_BLK_VALID))
+	  if (blk->tag == tag && (blk->status & CACHE_BLK_VALID)&& blk->ready <= now)
+	  //if (blk->tag == tag && (blk->status & CACHE_BLK_VALID))
 	    goto cache_hit;
 	}
     }
@@ -637,8 +637,8 @@ cache_access(struct cache_t *cp,	/* cache to access */
 	   blk;
 	   blk=blk->way_next)
 	{
-	  if (blk->tag == tag && (blk->status & CACHE_BLK_VALID))
-	  //if (blk->tag == tag && (blk->status & CACHE_BLK_VALID)&& blk->ready <= now)
+	  //if (blk->tag == tag && (blk->status & CACHE_BLK_VALID))
+	  if (blk->tag == tag && (blk->status & CACHE_BLK_VALID)&& blk->ready <= now)
 	    goto cache_hit;
 	}
     }
